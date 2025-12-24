@@ -29,6 +29,7 @@ dev = [
     "tqdm>=4.67.1",
     "matplotlib>=3.10.8",
     "scikit-learn>=1.8.0",
+    "pandas>=2.3.3",
 ]
 
 
