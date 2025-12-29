@@ -1,0 +1,19 @@
+import requests
+
+# URL de l'API
+BASE_URL = "http://127.0.0.1:8000"
+
+# Test 1 : Health check
+print("🔍 Test /health...")
+response = requests.get(f"{BASE_URL}/health")
+print(f"   Status: {response.json()}")
+
+# Test 2 : Prédiction
+print("\n🔍 Test /predict...")
+image_path = "data/captcha_images_v2/2nx38.png"  # Change avec ton image
+
+with open(image_path, "rb") as f:
+    files = {"file": f}
+    response = requests.post(f"{BASE_URL}/predict", files=files)
+
+print(f"   Résultat: {response.json()}")
