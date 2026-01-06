@@ -9,7 +9,7 @@ from PIL import Image
 from typing import Dict, List
 
 # Import de la configuration
-from app.config import (
+from app.config_0 import (
     IMAGE_WIDTH,
     IMAGE_HEIGHT,
     MEAN,
@@ -17,7 +17,7 @@ from app.config import (
 )
 
 # Import de l'architecture depuis le fichier model.py
-from app.model import CaptchaModel 
+from app.model_0 import CaptchaModel 
 
 
 def load_trained_model(model_path: str, num_chars: int = 19, device: str = "cpu") -> CaptchaModel:
