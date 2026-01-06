@@ -1,80 +1,178 @@
 """
-CAPTCHA Scraper Service
-=======================
-Service de webscraping avec detection et resolution automatique de CAPTCHAs.
+CAPTCHA Scraper Service - Webscraping avec bypass automatique.
 
-Utilise Playwright pour l'automatisation web.
+Utilise Playwright pour l'automatisation web avec:
+- Détection automatique de CAPTCHAs
+- Résolution via SolverService
+- Soumission automatique
+- Extraction de données
 
-M2 MoSEF - Universite Paris 1 Pantheon-Sorbonne
+M2 MoSEF - Université Paris 1 Panthéon-Sorbonne
 """
 
 import asyncio
 import base64
+import logging
 from typing import Dict, Any, Optional, List
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image
 import io
 
 
+# Logger
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# SÉLECTEURS CSS PAR DÉFAUT
+# =============================================================================
+
+DEFAULT_CAPTCHA_SELECTORS = [
+    # Par attribut src
+    "img[src*='captcha']",
+    "img[src*='verify']",
+    "img[src*='code']",
+    "img[src*='validation']",
+    # Par attribut alt
+    "img[alt*='captcha']",
+    "img[alt*='verification']",
+    # Par ID
+    "img[id*='captcha']",
+    "#captcha-image",
+    "#captcha",
+    "#captchaImage",
+    # Par classe
+    "img[class*='captcha']",
+    ".captcha-img",
+    ".captcha",
+    ".captcha-image",
+]
+
+DEFAULT_INPUT_SELECTORS = [
+    # Par attribut name
+    "input[name*='captcha']",
+    "input[name*='verification']",
+    "input[name*='code']",
+    # Par ID
+    "input[id*='captcha']",
+    "#captcha-input",
+    "#captchaInput",
+    "#captcha",
+    # Par placeholder
+    "input[placeholder*='captcha']",
+    "input[placeholder*='code']",
+    "input[placeholder*='enter']",
+    # Par classe
+    ".captcha-input",
+]
+
+
+# =============================================================================
+# RÉSULTAT DU SCRAPING
+# =============================================================================
+
+@dataclass
+class ScrapeResult:
+    """Résultat d'une opération de scraping."""
+    
+    success: bool
+    url: str
+    captcha_found: bool = False
+    captcha_solved: Optional[str] = None
+    captcha_confidence: Optional[float] = None
+    page_title: Optional[str] = None
+    data: Optional[List[str]] = None
+    screenshot: Optional[bytes] = None
+    message: str = ""
+    error: Optional[str] = None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convertit en dictionnaire."""
+        return {
+            "success": self.success,
+            "url": self.url,
+            "captcha_found": self.captcha_found,
+            "captcha_solved": self.captcha_solved,
+            "captcha_confidence": self.captcha_confidence,
+            "page_title": self.page_title,
+            "data": self.data,
+            "has_screenshot": self.screenshot is not None,
+            "message": self.message,
+            "error": self.error,
+        }
+
+
+# =============================================================================
+# SCRAPER SERVICE
+# =============================================================================
+
 class ScraperService:
     """
-    Service de webscraping avec bypass CAPTCHA.
+    Service de webscraping avec bypass CAPTCHA automatique.
     
-    Fonctionnalites:
-    - Navigation web avec Playwright
-    - Detection automatique de CAPTCHAs
-    - Resolution et soumission automatique
-    - Extraction de donnees
+    Utilise Playwright pour la navigation et SolverService
+    pour la résolution des CAPTCHAs.
+    
+    Attributes:
+        captcha_selectors: Sélecteurs CSS pour les images CAPTCHA.
+        input_selectors: Sélecteurs CSS pour les champs input.
     """
     
-    # Selecteurs CSS communs pour les CAPTCHAs
-    CAPTCHA_SELECTORS = [
-        "img[src*='captcha']",
-        "img[alt*='captcha']",
-        "img[id*='captcha']",
-        "img[class*='captcha']",
-        "#captcha-image",
-        "#captcha",
-        ".captcha-img",
-        ".captcha",
-        "img[src*='verify']",
-        "img[src*='code']",
-    ]
+    def __init__(
+        self,
+        captcha_selectors: Optional[List[str]] = None,
+        input_selectors: Optional[List[str]] = None,
+        default_model: str = "trocr",
+    ) -> None:
+        """
+        Initialise le service de scraping.
+        
+        Args:
+            captcha_selectors: Sélecteurs personnalisés pour les CAPTCHAs.
+            input_selectors: Sélecteurs personnalisés pour les inputs.
+            default_model: Modèle de résolution par défaut.
+        """
+        self.captcha_selectors = captcha_selectors or DEFAULT_CAPTCHA_SELECTORS
+        self.input_selectors = input_selectors or DEFAULT_INPUT_SELECTORS
+        self.default_model = default_model
+        
+        # Playwright (initialisé à la demande)
+        self._browser = None
+        self._playwright = None
+        
+        # Solver (initialisé à la demande)
+        self._solver = None
     
-    # Selecteurs CSS communs pour les inputs CAPTCHA
-    INPUT_SELECTORS = [
-        "input[name*='captcha']",
-        "input[id*='captcha']",
-        "input[placeholder*='captcha']",
-        "input[placeholder*='code']",
-        "#captcha-input",
-        "#captcha",
-        ".captcha-input",
-    ]
-    
-    def __init__(self):
-        """Initialise le service de scraping."""
-        self.browser = None
-        self.playwright = None
-        self.solver = None
-    
-    async def _init_browser(self):
+    async def _init_browser(self) -> None:
         """Initialise le navigateur Playwright."""
-        if self.browser is None:
-            from playwright.async_api import async_playwright
-            
-            self.playwright = await async_playwright().start()
-            self.browser = await self.playwright.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
-            )
+        if self._browser is not None:
+            return
+        
+        from playwright.async_api import async_playwright
+        
+        self._playwright = await async_playwright().start()
+        self._browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+        )
+        
+        logger.info("Navigateur Playwright initialisé")
     
-    async def _init_solver(self):
-        """Initialise le service de resolution."""
-        if self.solver is None:
-            from app.services.solver_service import SolverService
-            self.solver = SolverService()
+    async def _init_solver(self) -> None:
+        """Initialise le service de résolution."""
+        if self._solver is not None:
+            return
+        
+        from app.services.solver_service import SolverService
+        
+        self._solver = SolverService()
+        logger.info("SolverService initialisé")
     
     async def scrape_with_captcha(
         self,
@@ -83,121 +181,143 @@ class ScraperService:
         input_selector: Optional[str] = None,
         submit_selector: Optional[str] = None,
         data_selector: Optional[str] = None,
-        model: str = "easyocr",
-    ) -> Dict[str, Any]:
+        model: Optional[str] = None,
+        take_screenshot: bool = False,
+        timeout: int = 30000,
+    ) -> ScrapeResult:
         """
-        Scrape une page web en resolvant automatiquement les CAPTCHAs.
+        Scrape une page web en résolvant automatiquement les CAPTCHAs.
         
         Args:
-            url: URL de la page a scraper
-            captcha_selector: Selecteur CSS pour l'image CAPTCHA
-            input_selector: Selecteur CSS pour le champ de saisie
-            submit_selector: Selecteur CSS pour le bouton submit
-            data_selector: Selecteur CSS pour les donnees a extraire
-            model: Modele de resolution a utiliser
-        
+            url: URL de la page à scraper.
+            captcha_selector: Sélecteur CSS pour l'image CAPTCHA.
+            input_selector: Sélecteur CSS pour le champ de saisie.
+            submit_selector: Sélecteur CSS pour le bouton submit.
+            data_selector: Sélecteur CSS pour les données à extraire.
+            model: Modèle de résolution ('crnn', 'trocr', 'florence', 'cascade').
+            take_screenshot: Si True, capture une screenshot.
+            timeout: Timeout en millisecondes.
+            
         Returns:
-            Dictionnaire avec les resultats du scraping
+            ScrapeResult avec les résultats du scraping.
         """
         await self._init_browser()
         await self._init_solver()
         
-        result = {
-            "success": False,
-            "url": url,
-            "captcha_found": False,
-            "captcha_solved": None,
-            "page_title": None,
-            "data": None,
-            "message": "",
-        }
+        model = model or self.default_model
+        
+        result = ScrapeResult(
+            success=False,
+            url=url,
+        )
         
         try:
-            # Creer un nouveau contexte de navigation
-            context = await self.browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            # Créer un nouveau contexte de navigation
+            context = await self._browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
             )
             page = await context.new_page()
             
             # Naviguer vers l'URL
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            result["page_title"] = await page.title()
+            await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            result.page_title = await page.title()
             
-            # Detecter un CAPTCHA
+            # Détecter un CAPTCHA
             captcha_element = await self._detect_captcha(page, captcha_selector)
             
             if captcha_element:
-                result["captcha_found"] = True
+                result.captcha_found = True
+                logger.info(f"CAPTCHA détecté sur {url}")
                 
                 # Extraire l'image du CAPTCHA
                 image_bytes = await self._extract_captcha_image(captcha_element)
                 
                 if image_bytes:
-                    # Resoudre le CAPTCHA
-                    solve_result = self.solver.solve(image_bytes, model=model)
-                    result["captcha_solved"] = solve_result["text"]
+                    # Résoudre le CAPTCHA
+                    solve_result = self._solver.solve(image_bytes, model=model)
+                    result.captcha_solved = solve_result.text
+                    result.captcha_confidence = solve_result.confidence
                     
-                    # Soumettre la solution si un input est specifie
-                    if input_selector:
+                    logger.info(f"CAPTCHA résolu: {solve_result.text} (conf={solve_result.confidence})")
+                    
+                    # Soumettre la solution si un input est spécifié
+                    if input_selector or self.input_selectors:
                         submitted = await self._submit_captcha(
-                            page, 
-                            input_selector, 
-                            solve_result["text"],
-                            submit_selector
+                            page,
+                            input_selector,
+                            solve_result.text,
+                            submit_selector,
                         )
                         
                         if submitted:
-                            # Attendre le rechargement
                             await page.wait_for_load_state("domcontentloaded")
-                            result["message"] = f"CAPTCHA soumis: {solve_result['text']}"
+                            result.message = f"CAPTCHA soumis: {solve_result.text}"
                         else:
-                            result["message"] = "CAPTCHA resolu mais soumission echouee"
+                            result.message = "CAPTCHA résolu mais soumission échouée"
                     else:
-                        result["message"] = f"CAPTCHA resolu: {solve_result['text']}"
+                        result.message = f"CAPTCHA résolu: {solve_result.text}"
                 else:
-                    result["message"] = "CAPTCHA detecte mais extraction echouee"
+                    result.message = "CAPTCHA détecté mais extraction échouée"
             else:
-                result["message"] = "Aucun CAPTCHA detecte"
+                result.message = "Aucun CAPTCHA détecté"
             
-            # Extraire les donnees si un selecteur est specifie
+            # Extraire les données si un sélecteur est spécifié
             if data_selector:
                 data = await self._extract_data(page, data_selector)
-                result["data"] = data
+                result.data = data
             
-            result["success"] = True
+            # Screenshot si demandé
+            if take_screenshot:
+                result.screenshot = await page.screenshot(full_page=False)
+            
+            result.success = True
             
             await context.close()
             
         except Exception as e:
-            result["message"] = f"Erreur: {str(e)}"
+            logger.error(f"Erreur de scraping: {e}")
+            result.error = str(e)
+            result.message = f"Erreur: {str(e)}"
         
         return result
     
     async def _detect_captcha(
-        self, 
-        page, 
-        custom_selector: Optional[str] = None
+        self,
+        page,
+        custom_selector: Optional[str] = None,
     ):
         """
-        Detecte un CAPTCHA sur la page.
+        Détecte un CAPTCHA sur la page.
         
         Args:
-            page: Page Playwright
-            custom_selector: Selecteur personnalise
-        
+            page: Page Playwright.
+            custom_selector: Sélecteur personnalisé (prioritaire).
+            
         Returns:
-            Element CAPTCHA ou None
+            Élément CAPTCHA ou None.
         """
-        selectors = [custom_selector] if custom_selector else self.CAPTCHA_SELECTORS
+        # Essayer le sélecteur personnalisé d'abord
+        if custom_selector:
+            try:
+                element = await page.query_selector(custom_selector)
+                if element:
+                    return element
+            except Exception:
+                pass
         
-        for selector in selectors:
-            if selector:
-                try:
-                    element = await page.query_selector(selector)
-                    if element:
-                        return element
-                except Exception:
-                    continue
+        # Essayer les sélecteurs par défaut
+        for selector in self.captcha_selectors:
+            try:
+                element = await page.query_selector(selector)
+                if element:
+                    logger.debug(f"CAPTCHA trouvé avec: {selector}")
+                    return element
+            except Exception:
+                continue
         
         return None
     
@@ -206,31 +326,32 @@ class ScraperService:
         Extrait les bytes de l'image CAPTCHA.
         
         Args:
-            element: Element Playwright
-        
+            element: Élément Playwright.
+            
         Returns:
-            Bytes de l'image ou None
+            Bytes de l'image ou None.
         """
         try:
-            # Methode 1: Attribut src avec data URL
+            # Méthode 1: Attribut src avec data URL
             src = await element.get_attribute("src")
             
             if src and src.startswith("data:image"):
-                # Image encodee en base64
+                # Image encodée en base64
                 base64_data = src.split(",")[1]
                 return base64.b64decode(base64_data)
             
-            # Methode 2: Screenshot de l'element
+            # Méthode 2: Screenshot de l'élément
             screenshot = await element.screenshot()
             return screenshot
             
-        except Exception:
+        except Exception as e:
+            logger.error(f"Erreur d'extraction: {e}")
             return None
     
     async def _submit_captcha(
         self,
         page,
-        input_selector: str,
+        input_selector: Optional[str],
         solution: str,
         submit_selector: Optional[str] = None,
     ) -> bool:
@@ -238,57 +359,63 @@ class ScraperService:
         Soumet la solution du CAPTCHA.
         
         Args:
-            page: Page Playwright
-            input_selector: Selecteur du champ input
-            solution: Solution a soumettre
-            submit_selector: Selecteur du bouton submit
-        
+            page: Page Playwright.
+            input_selector: Sélecteur du champ input.
+            solution: Solution à soumettre.
+            submit_selector: Sélecteur du bouton submit.
+            
         Returns:
-            True si soumis avec succes
+            True si soumis avec succès.
         """
         try:
-            # Trouver et remplir l'input
-            input_element = await page.query_selector(input_selector)
+            # Trouver l'input
+            input_element = None
+            
+            if input_selector:
+                input_element = await page.query_selector(input_selector)
+            
             if not input_element:
-                # Essayer les selecteurs par defaut
-                for selector in self.INPUT_SELECTORS:
+                for selector in self.input_selectors:
                     input_element = await page.query_selector(selector)
                     if input_element:
                         break
             
-            if input_element:
-                await input_element.fill(solution)
-                
-                # Soumettre si un bouton est specifie
-                if submit_selector:
-                    submit_btn = await page.query_selector(submit_selector)
-                    if submit_btn:
-                        await submit_btn.click()
-                else:
-                    # Essayer de soumettre avec Enter
-                    await input_element.press("Enter")
-                
-                return True
+            if not input_element:
+                logger.warning("Input CAPTCHA non trouvé")
+                return False
             
-            return False
+            # Remplir l'input
+            await input_element.fill(solution)
             
-        except Exception:
+            # Soumettre
+            if submit_selector:
+                submit_btn = await page.query_selector(submit_selector)
+                if submit_btn:
+                    await submit_btn.click()
+            else:
+                # Essayer avec Enter
+                await input_element.press("Enter")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur de soumission: {e}")
             return False
     
     async def _extract_data(
-        self, 
-        page, 
-        selector: str
+        self,
+        page,
+        selector: str,
     ) -> Optional[List[str]]:
         """
-        Extrait des donnees de la page.
+        Extrait des données de la page.
         
         Args:
-            page: Page Playwright
-            selector: Selecteur CSS
-        
+            page: Page Playwright.
+            selector: Sélecteur CSS.
+            
         Returns:
-            Liste des textes extraits
+            Liste des textes extraits.
         """
         try:
             elements = await page.query_selector_all(selector)
@@ -305,27 +432,29 @@ class ScraperService:
             return None
     
     async def take_screenshot(
-        self, 
-        url: str, 
-        output_path: Optional[str] = None
+        self,
+        url: str,
+        output_path: Optional[str] = None,
+        full_page: bool = False,
     ) -> bytes:
         """
-        Prend une capture d'ecran d'une page.
+        Prend une capture d'écran d'une page.
         
         Args:
-            url: URL de la page
-            output_path: Chemin de sauvegarde (optionnel)
-        
+            url: URL de la page.
+            output_path: Chemin de sauvegarde (optionnel).
+            full_page: Si True, capture la page entière.
+            
         Returns:
-            Bytes de l'image PNG
+            Bytes de l'image PNG.
         """
         await self._init_browser()
         
-        context = await self.browser.new_context()
+        context = await self._browser.new_context()
         page = await context.new_page()
         
         await page.goto(url, wait_until="domcontentloaded")
-        screenshot = await page.screenshot(full_page=False)
+        screenshot = await page.screenshot(full_page=full_page)
         
         if output_path:
             Path(output_path).write_bytes(screenshot)
@@ -334,32 +463,42 @@ class ScraperService:
         
         return screenshot
     
-    async def close(self):
-        """Ferme le navigateur."""
-        if self.browser:
-            await self.browser.close()
-        if self.playwright:
-            await self.playwright.stop()
+    async def close(self) -> None:
+        """Ferme le navigateur et libère les ressources."""
+        if self._browser:
+            await self._browser.close()
+            self._browser = None
+        
+        if self._playwright:
+            await self._playwright.stop()
+            self._playwright = None
+        
+        logger.info("ScraperService fermé")
 
 
-# Fonction utilitaire pour utiliser le scraper de maniere synchrone
+# =============================================================================
+# FONCTION SYNCHRONE
+# =============================================================================
+
 def scrape_sync(
     url: str,
     captcha_selector: Optional[str] = None,
     input_selector: Optional[str] = None,
-    model: str = "easyocr",
+    submit_selector: Optional[str] = None,
+    model: str = "trocr",
 ) -> Dict[str, Any]:
     """
     Version synchrone du scraper.
     
     Args:
-        url: URL a scraper
-        captcha_selector: Selecteur du CAPTCHA
-        input_selector: Selecteur de l'input
-        model: Modele de resolution
-    
+        url: URL à scraper.
+        captcha_selector: Sélecteur du CAPTCHA.
+        input_selector: Sélecteur de l'input.
+        submit_selector: Sélecteur du bouton submit.
+        model: Modèle de résolution.
+        
     Returns:
-        Resultats du scraping
+        Dictionnaire avec les résultats.
     """
     async def _scrape():
         scraper = ScraperService()
@@ -367,9 +506,10 @@ def scrape_sync(
             url=url,
             captcha_selector=captcha_selector,
             input_selector=input_selector,
+            submit_selector=submit_selector,
             model=model,
         )
         await scraper.close()
-        return result
+        return result.to_dict()
     
     return asyncio.run(_scrape())

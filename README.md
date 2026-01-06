@@ -1,211 +1,334 @@
-# Captcha Solver API 🔓
+# 🔓 CAPTCHA Factory
 
-API de résolution automatique de CAPTCHAs visuels - Projet M2 MoSEF 2025-2026
+<div align="center">
 
-## 📋 Description
+![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)
+![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-Ce projet vise à concevoir un système de webscraping robuste aux CAPTCHAs visuels en utilisant :
-- **Webscraping** : Extraction de données web
-- **Computer Vision** : Traitement d'images
-- **VLM** (Vision Language Models) : Reconnaissance de texte/contenu
-- **FastAPI** : API REST pour industrialiser le projet
+**API de résolution automatique de CAPTCHAs visuels**
 
-## 🛠️ Technologies
+[Documentation](#-documentation) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api) • [Modèles](#-modèles)
 
-- Python 3.12+
-- FastAPI
-- Pydantic
-- pytest
-- Ruff (linter/formatter)
-- uv (gestionnaire de packages)
+</div>
+
+---
+
+## 📚 Projet Académique
+
+| | |
+|---|---|
+| **Formation** | M2 MoSEF (Modélisation Statistique, Économique et Financière) |
+| **Université** | Paris 1 Panthéon-Sorbonne |
+| **Équipe** | Hana (CRNN) & Aymen (API/Intégration) |
+| **Année** | 2024-2025 |
+
+---
+
+## ✨ Fonctionnalités
+
+- 🎨 **Génération** de CAPTCHAs personnalisables
+- 🔍 **Résolution** avec plusieurs modèles (CRNN, TrOCR, Florence-2)
+- 🔄 **Mode Cascade** avec fallback automatique
+- ⚖️ **Comparaison** des performances entre modèles
+- 📊 **Benchmark** automatisé
+- 🌐 **Webscraping** avec bypass CAPTCHA
+- 🎯 **Dashboard** interactif Streamlit
+
+---
+
+## 🤖 Modèles Disponibles
+
+| Modèle | Description | Accuracy | Charset | Vitesse |
+|--------|-------------|----------|---------|---------|
+| **CRNN** | CNN + GRU bidirectionnel (Hana) | 98% | 19 chars | ⚡ ~50ms |
+| **TrOCR** | Transformer pré-entraîné | 99.25% | Complet | 🔄 ~200ms |
+| **Florence-2** | VLM Microsoft (zero-shot) | ~85% | Universel | 🐢 ~500ms |
+| **EasyOCR** | OCR généraliste | ~60% | Complet | 🔄 ~150ms |
+
+### Mode Cascade
+
+Le mode `cascade` essaie les modèles dans l'ordre jusqu'à obtenir une prédiction confiante :
+
+```
+CAPTCHA → CRNN (si charset compatible)
+            ↓ (confiance < 85%)
+         TrOCR (très précis)
+            ↓ (confiance < 85%)
+         Florence-2 (fallback universel)
+```
+
+---
 
 ## 🚀 Installation
 
 ### Prérequis
 
-- Python 3.12 ou supérieur
-- [uv](https://github.com/astral-sh/uv) (gestionnaire de packages)
+- Python 3.12+
+- pip ou uv
 
-### Installer uv
+### Installation rapide
+
 ```bash
-# Linux/Mac
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Cloner le projet
+git clone https://github.com/username/captcha-factory.git
+cd captcha-factory
 
-# Windows (PowerShell)
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+# Créer l'environnement virtuel
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# ou: venv\Scripts\activate  # Windows
+
+# Installer les dépendances
+pip install -r requirements.txt
+
+# Télécharger les modèles pré-entraînés
+python scripts/download_models.py
+
+# (Optionnel) Installer Playwright pour le webscraping
+pip install playwright
+playwright install chromium
 ```
 
-### Cloner le projet
+### Avec uv (recommandé)
+
 ```bash
-git clone https://github.com/TON_USERNAME/captcha-solver-api.git
-cd captcha-solver-api
+# Installer uv
+pip install uv
+
+# Synchroniser les dépendances
+uv sync
+
+# Télécharger les modèles
+uv run python scripts/download_models.py
 ```
 
-### Créer l'environnement virtuel
+---
+
+## 💻 Usage
+
+### Lancer l'API
+
 ```bash
-# Créer le venv
-uv venv
+# Via le script principal
+python main.py api
 
-# Activer le venv
-# Linux/Mac
-source .venv/bin/activate
+# Ou directement avec uvicorn
+uvicorn app.main:app --reload
 
-# Windows (PowerShell)
-.venv\Scripts\Activate.ps1
-
-# Windows (CMD)
-.venv\Scripts\activate.bat
-
-# Windows (Git Bash)
-source .venv/Scripts/activate
+# L'API est disponible sur http://localhost:8000
+# Documentation Swagger: http://localhost:8000/docs
 ```
 
-### Installer les dépendances
+### Lancer le Dashboard
+
 ```bash
-# Production + Dev
-uv pip install -e ".[dev]"
+python main.py dashboard
+
+# Le dashboard est disponible sur http://localhost:8501
 ```
 
-### Configurer l'environnement
+### Autres commandes
+
 ```bash
-# Copier le fichier de config
-cp .env.example .env
+# Télécharger les modèles
+python main.py download
 
-# Éditer si nécessaire
-```
+# Lancer le benchmark
+python main.py benchmark --n 50
 
-## 🏃 Lancer le projet
-
-### API
-```bash
-uvicorn captcha_solver.main:app --reload
-```
-
-L'API sera accessible sur :
-- http://localhost:8000
-- Documentation Swagger : http://localhost:8000/docs
-- Documentation ReDoc : http://localhost:8000/redoc
-
-### Jupyter Notebook
-```bash
-jupyter notebook
-```
-
-## 🧪 Tests et qualité de code
-```bash
 # Lancer les tests
-pytest -v
+python main.py test
 
-# Tests avec couverture
-pytest --cov=src/captcha_solver
+# Générer un dataset
+python main.py generate --n 1000 --output ./data/synthetic
 
-# Linter
-ruff check src/
-
-# Linter avec correction auto
-ruff check src/ --fix
-
-# Formatter
-ruff format src/
-
-# Type checking
-mypy src/
+# Afficher l'aide
+python main.py --help
 ```
 
-## 📁 Structure du projet
+---
+
+## 🔌 API
+
+### Endpoints principaux
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| GET | `/` | Informations de l'API |
+| GET | `/health` | Status de santé |
+| GET | `/models` | Liste des modèles |
+| POST | `/generate` | Générer un CAPTCHA |
+| GET | `/generate/random` | CAPTCHA aléatoire |
+| POST | `/solve` | Résoudre (base64) |
+| POST | `/solve/upload` | Résoudre (fichier) |
+| POST | `/solve/cascade` | Résolution en cascade |
+| POST | `/compare` | Comparer les modèles |
+| GET | `/benchmark` | Benchmark complet |
+| POST | `/scrape` | Webscraping avec bypass |
+
+### Exemples d'utilisation
+
+#### Python
+
+```python
+import requests
+import base64
+
+# Générer un CAPTCHA
+response = requests.post("http://localhost:8000/generate", json={
+    "length": 5,
+    "noise_level": 0.3,
+})
+data = response.json()
+image_base64 = data["image_base64"]
+true_text = data["true_text"]
+
+# Résoudre le CAPTCHA
+response = requests.post("http://localhost:8000/solve", json={
+    "image_base64": image_base64,
+    "model": "trocr",
+})
+result = response.json()
+print(f"Prédit: {result['predicted_text']}")
+print(f"Confiance: {result['confidence']}")
 ```
-captcha-solver-api/
-├── .env.example          # Variables d'environnement (exemple)
-├── .gitignore            # Fichiers ignorés par Git
-├── pyproject.toml        # Configuration du projet
-├── ruff.toml             # Configuration Ruff
-├── README.md             # Ce fichier
-├── data/
-│   ├── raw/              # Données brutes (CAPTCHAs)
-│   └── processed/        # Données traitées
-├── notebooks/            # Jupyter notebooks
-│   └── 01_exploration.ipynb
-├── src/
-│   └── captcha_solver/
-│       ├── __init__.py
-│       ├── main.py       # Point d'entrée FastAPI
-│       ├── api/
-│       │   └── routes/   # Endpoints de l'API
-│       ├── core/
-│       │   └── config.py # Configuration
-│       ├── models/       # Modèles Pydantic
-│       └── services/     # Logique métier
-└── tests/
-    ├── __init__.py
-    └── test_main.py
-```
 
-## 🔄 Workflow Git
+#### cURL
 
-### Branches
-
-- `main` : Branche principale (stable)
-- `dev/nom` : Branches de développement individuelles
-
-### Contribuer
 ```bash
-# 1. Récupérer les dernières modifications
-git checkout main
-git pull origin main
+# Générer un CAPTCHA
+curl -X POST "http://localhost:8000/generate" \
+     -H "Content-Type: application/json" \
+     -d '{"length": 5, "noise_level": 0.3}'
 
-# 2. Créer une branche pour ta feature
-git checkout -b feature/ma-feature
-
-# 3. Faire tes modifications
-# ...
-
-# 4. Vérifier la qualité du code
-ruff check src/ --fix
-ruff format src/
-pytest -v
-
-# 5. Commiter
-git add .
-git commit -m "feat: description de la feature"
-
-# 6. Pusher
-git push origin feature/ma-feature
-
-# 7. Créer une Pull Request sur GitHub
+# Résoudre avec un fichier
+curl -X POST "http://localhost:8000/solve/upload" \
+     -F "file=@captcha.png" \
+     -F "model=trocr"
 ```
 
-### Conventions de commit
+---
 
-- `feat:` nouvelle fonctionnalité
-- `fix:` correction de bug
-- `docs:` documentation
-- `test:` ajout/modification de tests
-- `refactor:` refactoring de code
+## 📁 Structure du Projet
 
-## 📊 Datasets recommandés
+```
+CAPTCHA_Factory/
+├── app/                          # Code source principal
+│   ├── main.py                   # API FastAPI
+│   ├── dashboard.py              # Dashboard Streamlit
+│   ├── models/                   # Définitions des modèles
+│   │   ├── base_solver.py        # Classe abstraite
+│   │   ├── crnn_model.py         # Solver CRNN
+│   │   ├── trocr_solver.py       # Solver TrOCR
+│   │   └── florence_solver.py    # Solver Florence-2
+│   ├── services/                 # Services métier
+│   │   ├── captcha_generator.py  # Générateur
+│   │   ├── solver_service.py     # Service multi-modèle
+│   │   └── scraper_service.py    # Webscraping
+│   └── utils/                    # Utilitaires
+├── config/                       # Configuration
+├── data/                         # Données et datasets
+├── models/                       # Poids des modèles
+├── notebooks/                    # Notebooks Jupyter
+├── scripts/                      # Scripts utilitaires
+├── tests/                        # Tests unitaires
+├── main.py                       # Point d'entrée
+├── requirements.txt              # Dépendances
+└── README.md                     # Ce fichier
+```
 
-| Dataset | Description |
-|---------|-------------|
-| LCSD Captcha Dataset | ~6000 images, 4 caractères |
-| Captcha Object Detection | ~100k images, 650k objets annotés |
-| Pixel Digit Captcha | Chiffres uniquement (5 digits) |
-| CAPTCHA Characters | 118k+ images de caractères |
-| CAPTCHA Image Dataset | 10k images annotées |
+---
 
-## 👥 Équipe
+## 📓 Notebooks
 
-- Membre 1 - @github_username
-- Membre 2 - @github_username
+| Notebook | Description |
+|----------|-------------|
+| `01_captcha_generator.ipynb` | Démonstration du générateur |
+| `02_captcha_solver.ipynb` | Test des modèles de résolution |
+| `03_webscraping.ipynb` | Webscraping avec bypass |
+| `04_model_comparison.ipynb` | Comparaison des modèles |
+| `05_benchmark_complete.ipynb` | Benchmark approfondi |
 
-## 📝 Livrables
+---
 
-- [ ] Notebook d'exploration et résultats
-- [ ] Rapport Overleaf
-- [ ] API fonctionnelle
-- [ ] Tests unitaires
+## ⚙️ Configuration
 
-## 📄 License
+Copiez `.env.example` vers `.env` et modifiez selon vos besoins :
 
-Ce projet est réalisé dans le cadre du Master 2 MoSEF - Université Paris 1 Panthéon-Sorbonne.
+```bash
+cp .env.example .env
+```
 
-helloooo
+Variables principales :
+
+```env
+DEVICE=cpu                    # cpu ou cuda
+DEFAULT_MODEL=trocr           # Modèle par défaut
+CONFIDENCE_THRESHOLD=0.85     # Seuil pour cascade
+LOG_LEVEL=INFO                # Niveau de log
+```
+
+---
+
+## 🧪 Tests
+
+```bash
+# Tous les tests
+pytest tests/ -v
+
+# Tests spécifiques
+pytest tests/test_generator.py -v
+pytest tests/test_solvers.py -v
+pytest tests/test_api.py -v
+
+# Avec couverture
+pytest tests/ --cov=app --cov-report=html
+```
+
+---
+
+## 📊 Benchmark
+
+```bash
+# Benchmark rapide (20 échantillons)
+python scripts/benchmark.py
+
+# Benchmark complet (100 échantillons)
+python scripts/benchmark.py --n-samples 100 --models trocr,crnn
+
+# Sauvegarder les résultats
+python scripts/benchmark.py --output results.json
+```
+
+---
+
+## ⚠️ Avertissement
+
+Ce projet est à but **éducatif uniquement**. N'utilisez pas ces outils pour contourner des CAPTCHAs sur des sites sans autorisation. Le contournement de CAPTCHAs peut violer les conditions d'utilisation des sites web et potentiellement des lois locales.
+
+---
+
+## 📄 Licence
+
+MIT License - voir [LICENSE](LICENSE)
+
+---
+
+## 🙏 Remerciements
+
+- [HuggingFace](https://huggingface.co/) pour les modèles pré-entraînés
+- [DunnBC22](https://huggingface.co/DunnBC22) pour le modèle TrOCR fine-tuné
+- [Microsoft](https://huggingface.co/microsoft) pour Florence-2
+- [FastAPI](https://fastapi.tiangolo.com/) et [Streamlit](https://streamlit.io/)
+
+---
+
+<div align="center">
+
+**M2 MoSEF - Université Paris 1 Panthéon-Sorbonne**
+
+Hana & Aymen • 2024-2025
+
+</div>

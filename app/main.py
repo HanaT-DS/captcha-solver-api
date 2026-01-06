@@ -1,142 +1,204 @@
 """
-CAPTCHA Factory API
-===================
-API de resolution automatique de CAPTCHAs visuels.
+CAPTCHA Factory API - Version 2.0
+=================================
+API de résolution automatique de CAPTCHAs visuels.
 
-M2 MoSEF - Universite Paris 1 Pantheon-Sorbonne
+Modèles disponibles:
+- CRNN : Modèle entraîné par Hana (98% accuracy, 19 chars)
+- TrOCR : Modèle pré-entraîné HuggingFace (99% accuracy)
+- Florence-2 : VLM zero-shot (universel)
+- EasyOCR : OCR généraliste (fallback)
 
-Usage:
-    uvicorn app.main:app --reload
-    
 Endpoints:
     GET  /              - Informations de l'API
-    GET  /health        - Status de sante
-    POST /generate      - Generer un CAPTCHA
-    POST /solve         - Resoudre un CAPTCHA (base64)
-    POST /solve/upload  - Resoudre un CAPTCHA (fichier)
-    POST /compare       - Comparer les modeles
-    POST /scrape        - Webscraping avec bypass CAPTCHA
+    GET  /health        - Status de santé
+    GET  /models        - Liste des modèles
+    POST /generate      - Générer un CAPTCHA
+    GET  /generate/random - CAPTCHA aléatoire
+    POST /solve         - Résoudre (base64)
+    POST /solve/upload  - Résoudre (fichier)
+    POST /solve/cascade - Résolution en cascade
+    POST /compare       - Comparer les modèles
+    GET  /benchmark     - Benchmark complet
+    POST /scrape        - Webscraping avec bypass
+
+M2 MoSEF - Université Paris 1 Panthéon-Sorbonne
 """
 
 import io
 import base64
 import time
-import asyncio
-from typing import Optional, List
+import logging
+from typing import Optional, List, Literal
+from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.services.captcha_generator import CaptchaGenerator
+from app.services.captcha_generator import CaptchaGenerator, CharsetType
 from app.services.solver_service import SolverService
 
 
 # =============================================================================
-# Schemas Pydantic
+# CONFIGURATION LOGGING
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# SERVICES GLOBAUX
+# =============================================================================
+
+generator = CaptchaGenerator()
+solver = SolverService(preload_models=["trocr"])
+
+
+# =============================================================================
+# LIFECYCLE
+# =============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gestion du cycle de vie de l'application."""
+    # Startup
+    logger.info("🚀 CAPTCHA Factory API démarré")
+    logger.info(f"📦 Modèles disponibles: {solver.available_models}")
+    yield
+    # Shutdown
+    solver.unload_all()
+    logger.info("👋 CAPTCHA Factory API arrêté")
+
+
+# =============================================================================
+# SCHEMAS PYDANTIC
 # =============================================================================
 
 class GenerateRequest(BaseModel):
-    """Schema pour la requete de generation."""
-    length: int = Field(default=5, ge=1, le=10, description="Nombre de caracteres")
+    """Requête de génération de CAPTCHA."""
+    length: int = Field(default=5, ge=1, le=10, description="Nombre de caractères")
     width: int = Field(default=200, ge=100, le=400, description="Largeur en pixels")
     height: int = Field(default=60, ge=40, le=150, description="Hauteur en pixels")
-    noise_level: float = Field(default=0.3, ge=0, le=1, description="Niveau de bruit")
+    noise_level: float = Field(default=0.3, ge=0, le=1, description="Niveau de bruit (0-1)")
+    charset: Optional[str] = Field(None, description="Charset personnalisé")
 
 
 class GenerateResponse(BaseModel):
-    """Schema pour la reponse de generation."""
+    """Réponse de génération."""
     image_base64: str
     true_text: str
     width: int
     height: int
+    charset_used: str
 
 
 class SolveRequest(BaseModel):
-    """Schema pour la requete de resolution."""
-    image_base64: str = Field(..., description="Image encodee en base64")
-    model: str = Field(default="easyocr", description="Modele: 'easyocr', 'crnn', ou 'all'")
+    """Requête de résolution."""
+    image_base64: str = Field(..., description="Image encodée en base64")
+    model: str = Field(default="trocr", description="Modèle: 'crnn', 'trocr', 'florence', 'cascade'")
 
 
 class SolveResponse(BaseModel):
-    """Schema pour la reponse de resolution."""
+    """Réponse de résolution."""
     predicted_text: str
     model_used: str
     confidence: Optional[float] = None
     processing_time_ms: float
+    metadata: Optional[dict] = None
 
 
 class CompareRequest(BaseModel):
-    """Schema pour la requete de comparaison."""
+    """Requête de comparaison."""
     image_base64: str = Field(..., description="Image en base64")
-    true_text: Optional[str] = Field(None, description="Texte reel pour verification")
+    true_text: Optional[str] = Field(None, description="Texte réel pour vérification")
+    models: Optional[List[str]] = Field(None, description="Modèles à comparer")
 
 
 class CompareResponse(BaseModel):
-    """Schema pour la reponse de comparaison."""
+    """Réponse de comparaison."""
     results: dict
-    winner: str
+    winner: Optional[str]
     true_text: Optional[str] = None
 
 
 class ScrapeRequest(BaseModel):
-    """Schema pour la requete de scraping."""
-    url: str = Field(..., description="URL a scraper")
-    captcha_selector: Optional[str] = Field(None, description="Selecteur CSS du CAPTCHA")
-    input_selector: Optional[str] = Field(None, description="Selecteur CSS de l'input")
-    submit_selector: Optional[str] = Field(None, description="Selecteur CSS du bouton submit")
-    data_selector: Optional[str] = Field(None, description="Selecteur CSS des donnees")
-    model: str = Field(default="easyocr", description="Modele de resolution")
+    """Requête de scraping."""
+    url: str = Field(..., description="URL à scraper")
+    captcha_selector: Optional[str] = Field(None, description="Sélecteur CSS du CAPTCHA")
+    input_selector: Optional[str] = Field(None, description="Sélecteur CSS de l'input")
+    submit_selector: Optional[str] = Field(None, description="Sélecteur CSS du bouton submit")
+    data_selector: Optional[str] = Field(None, description="Sélecteur CSS des données")
+    model: str = Field(default="trocr", description="Modèle de résolution")
 
 
 class ScrapeResponse(BaseModel):
-    """Schema pour la reponse de scraping."""
+    """Réponse de scraping."""
     success: bool
     url: str
     captcha_found: bool
     captcha_solved: Optional[str] = None
+    captcha_confidence: Optional[float] = None
     page_title: Optional[str] = None
     data: Optional[List[str]] = None
     message: str
 
 
+class ModelInfo(BaseModel):
+    """Informations sur un modèle."""
+    name: str
+    type: str
+    charset_size: int
+    is_loaded: bool
+    is_available: bool
+
+
 # =============================================================================
-# Application FastAPI
+# APPLICATION FASTAPI
 # =============================================================================
 
 app = FastAPI(
     title="CAPTCHA Factory API",
     description="""
-## API de resolution automatique de CAPTCHAs visuels
+## 🔓 API de résolution automatique de CAPTCHAs visuels
 
-### Fonctionnalites
+### Fonctionnalités
 
-* **Generate** : Creer des CAPTCHAs personnalisables
-* **Solve** : Resoudre des CAPTCHAs avec differents modeles
-* **Compare** : Comparer les performances des modeles
-* **Scrape** : Webscraping avec bypass automatique de CAPTCHA
+* **Generate** : Créer des CAPTCHAs personnalisables
+* **Solve** : Résoudre des CAPTCHAs avec différents modèles
+* **Cascade** : Résolution intelligente avec fallback automatique
+* **Compare** : Comparer les performances des modèles
+* **Benchmark** : Tester les modèles sur des données générées
+* **Scrape** : Webscraping avec bypass automatique
 
-### Modeles disponibles
+### Modèles disponibles
 
-* **EasyOCR** : Modele pre-entraine, rapide sur CPU
-* **CRNN** : Modele personnalise entraine sur captcha_images_v2
+| Modèle | Accuracy | Charset | Vitesse |
+|--------|----------|---------|---------|
+| **CRNN** | 98% | 19 chars | ⚡ Rapide |
+| **TrOCR** | 99% | Complet | 🔄 Moyen |
+| **Florence-2** | ~85% | Universel | 🐢 Lent |
+| **EasyOCR** | ~60% | Complet | 🔄 Moyen |
 
-### Comment utiliser /solve/upload
+### Cascade recommandée
 
-1. Cliquez sur "Try it out"
-2. Cliquez sur "Choose File"
-3. Selectionnez une image PNG ou JPG
-4. Cliquez sur "Execute"
-
-**Important**: N'uploadez pas le fichier JSON de /generate, mais une vraie image !
+Pour les meilleurs résultats, utilisez `model: "cascade"` qui essaiera:
+1. **CRNN** (si charset compatible) → Rapide
+2. **TrOCR** → Très précis
+3. **Florence-2** → Fallback universel
 
 ---
-M2 MoSEF - Universite Paris 1 Pantheon-Sorbonne
+**M2 MoSEF - Université Paris 1 Panthéon-Sorbonne**
     """,
-    version="1.0.0",
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 # Middleware CORS
@@ -150,20 +212,13 @@ app.add_middleware(
 
 
 # =============================================================================
-# Services (initialises au demarrage)
-# =============================================================================
-
-generator = CaptchaGenerator()
-solver = SolverService()
-
-
-# =============================================================================
-# Gestionnaire d'erreurs global
+# GESTIONNAIRE D'ERREURS
 # =============================================================================
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
-    """Gere toutes les exceptions non capturees."""
+    """Gère toutes les exceptions non capturées."""
+    logger.error(f"Erreur non gérée: {exc}")
     return JSONResponse(
         status_code=500,
         content={
@@ -174,57 +229,62 @@ async def global_exception_handler(request, exc):
 
 
 # =============================================================================
-# Endpoints
+# ENDPOINTS - ROOT & HEALTH
 # =============================================================================
 
 @app.get("/", tags=["Root"])
 async def root():
-    """
-    Point d'entree de l'API.
-    
-    Retourne les informations de base et les endpoints disponibles.
-    """
+    """Point d'entrée de l'API."""
     return {
-        "message": "CAPTCHA Factory API",
-        "version": "1.0.0",
-        "description": "API de resolution automatique de CAPTCHAs visuels",
+        "message": "🔓 CAPTCHA Factory API",
+        "version": "2.0.0",
+        "description": "API de résolution automatique de CAPTCHAs visuels",
+        "models": solver.available_models,
         "endpoints": {
-            "docs": "GET /docs - Documentation Swagger",
-            "generate": "POST /generate - Generer un CAPTCHA",
-            "solve": "POST /solve - Resoudre un CAPTCHA (base64)",
-            "solve_upload": "POST /solve/upload - Resoudre un CAPTCHA (fichier)",
-            "compare": "POST /compare - Comparer les modeles",
-            "scrape": "POST /scrape - Webscraping avec bypass CAPTCHA",
+            "docs": "/docs",
+            "health": "/health",
+            "models": "/models",
+            "generate": "/generate",
+            "solve": "/solve",
+            "cascade": "/solve/cascade",
+            "compare": "/compare",
+            "benchmark": "/benchmark",
+            "scrape": "/scrape",
         },
-        "models": solver.get_available_models(),
     }
 
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """Verifie l'etat de sante de l'API."""
+    """Vérifie l'état de santé de l'API."""
     return {
         "status": "healthy",
-        "models_available": solver.get_available_models(),
-        "models_loaded": solver.get_loaded_models(),
+        "models_available": solver.available_models,
+        "models_loaded": solver.loaded_models,
     }
 
 
-# -----------------------------------------------------------------------------
-# Endpoints de generation
-# -----------------------------------------------------------------------------
+@app.get("/models", response_model=List[ModelInfo], tags=["Models"])
+async def list_models():
+    """Liste tous les modèles avec leurs informations."""
+    info = solver.get_model_info()
+    return [ModelInfo(**data) for data in info.values()]
+
+
+# =============================================================================
+# ENDPOINTS - GÉNÉRATION
+# =============================================================================
 
 @app.post("/generate", response_model=GenerateResponse, tags=["Generate"])
 async def generate_captcha(request: GenerateRequest):
     """
-    Genere un nouveau CAPTCHA.
+    Génère un nouveau CAPTCHA.
     
-    - **length**: Nombre de caracteres (1-10)
+    - **length**: Nombre de caractères (1-10)
     - **width**: Largeur de l'image en pixels
     - **height**: Hauteur de l'image en pixels
     - **noise_level**: Niveau de bruit (0-1)
-    
-    Retourne l'image en base64 et le texte reel.
+    - **charset**: Charset personnalisé (optionnel)
     """
     try:
         image, text = generator.generate(
@@ -232,6 +292,7 @@ async def generate_captcha(request: GenerateRequest):
             width=request.width,
             height=request.height,
             noise_level=request.noise_level,
+            charset=request.charset,
         )
         
         buffer = io.BytesIO()
@@ -243,15 +304,16 @@ async def generate_captcha(request: GenerateRequest):
             true_text=text,
             width=request.width,
             height=request.height,
+            charset_used=request.charset or generator.charset,
         )
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur de generation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur de génération: {str(e)}")
 
 
 @app.get("/generate/random", response_model=GenerateResponse, tags=["Generate"])
 async def generate_random_captcha():
-    """Genere un CAPTCHA aleatoire avec les parametres par defaut."""
+    """Génère un CAPTCHA aléatoire avec les paramètres par défaut."""
     try:
         image, text = generator.generate()
         
@@ -264,289 +326,200 @@ async def generate_random_captcha():
             true_text=text,
             width=200,
             height=60,
+            charset_used=generator.charset,
         )
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur de generation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur de génération: {str(e)}")
 
 
-# -----------------------------------------------------------------------------
-# Endpoints de resolution
-# -----------------------------------------------------------------------------
+# =============================================================================
+# ENDPOINTS - RÉSOLUTION
+# =============================================================================
 
 @app.post("/solve", response_model=SolveResponse, tags=["Solve"])
 async def solve_captcha(request: SolveRequest):
     """
-    Resout un CAPTCHA a partir d'une image en base64.
+    Résout un CAPTCHA à partir d'une image en base64.
     
-    - **image_base64**: Image encodee en base64 (copiez depuis /generate)
-    - **model**: Modele a utiliser ('easyocr', 'crnn', ou 'all')
-    
-    Retourne le texte predit et les metriques.
+    - **image_base64**: Image encodée en base64
+    - **model**: Modèle à utiliser ('crnn', 'trocr', 'florence', 'easyocr', 'cascade')
     """
     try:
-        start_time = time.time()
-        
-        # Decoder l'image
+        # Décoder l'image
         try:
             image_bytes = base64.b64decode(request.image_base64)
         except Exception:
             raise HTTPException(
-                status_code=400, 
-                detail="Image base64 invalide. Assurez-vous de copier uniquement la valeur de image_base64."
-            )
-        
-        # Verifier que c'est une image valide
-        try:
-            from PIL import Image
-            img = Image.open(io.BytesIO(image_bytes))
-            img.verify()
-        except Exception:
-            raise HTTPException(
                 status_code=400,
-                detail="Le contenu decode n'est pas une image valide."
+                detail="Image base64 invalide."
             )
         
-        # Resoudre
+        # Résoudre
         result = solver.solve(image_bytes, model=request.model)
         
-        processing_time = (time.time() - start_time) * 1000
-        
         return SolveResponse(
-            predicted_text=result["text"],
-            model_used=result["model"],
-            confidence=result.get("confidence"),
-            processing_time_ms=round(processing_time, 2),
+            predicted_text=result.text,
+            model_used=result.model,
+            confidence=result.confidence,
+            processing_time_ms=result.processing_time_ms,
+            metadata=result.metadata,
         )
     
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur de resolution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur de résolution: {str(e)}")
 
 
 @app.post("/solve/upload", response_model=SolveResponse, tags=["Solve"])
 async def solve_uploaded_captcha(
     file: UploadFile = File(..., description="Fichier image PNG ou JPG"),
-    model: str = Form(default="easyocr", description="Modele: 'easyocr', 'crnn', ou 'all'")
+    model: str = Form(default="trocr", description="Modèle de résolution"),
 ):
     """
-    Resout un CAPTCHA a partir d'un fichier image uploade.
+    Résout un CAPTCHA à partir d'un fichier image uploadé.
     
-    **Important**: Uploadez un fichier image (PNG, JPG), pas un fichier JSON !
-    
-    1. Cliquez sur "Choose File"
-    2. Selectionnez une image CAPTCHA
-    3. Choisissez le modele
-    4. Cliquez sur "Execute"
+    **Important**: Uploadez une image (PNG, JPG), pas un fichier JSON.
     """
     try:
-        start_time = time.time()
-        
-        # Verifier le type de fichier
-        if file.content_type not in ["image/png", "image/jpeg", "image/jpg"]:
+        # Vérifier le type
+        if file.content_type not in ["image/png", "image/jpeg", "image/jpg", "image/webp"]:
             raise HTTPException(
                 status_code=400,
-                detail=f"Type de fichier non supporte: {file.content_type}. "
-                       f"Utilisez PNG ou JPG. "
-                       f"Note: N'uploadez pas le fichier JSON de /generate !"
+                detail=f"Type non supporté: {file.content_type}. Utilisez PNG ou JPG."
             )
         
-        # Lire le fichier
         image_bytes = await file.read()
-        
-        # Verifier que c'est une image valide
-        try:
-            from PIL import Image
-            img = Image.open(io.BytesIO(image_bytes))
-            img.verify()
-        except Exception:
-            raise HTTPException(
-                status_code=400,
-                detail="Le fichier n'est pas une image valide."
-            )
-        
-        # Resoudre
-        # Re-lire car verify() consomme le stream
-        image_bytes = await file.seek(0)
-        image_bytes = await file.read()
-        
         result = solver.solve(image_bytes, model=model)
         
-        processing_time = (time.time() - start_time) * 1000
-        
         return SolveResponse(
-            predicted_text=result["text"],
-            model_used=result["model"],
-            confidence=result.get("confidence"),
-            processing_time_ms=round(processing_time, 2),
+            predicted_text=result.text,
+            model_used=result.model,
+            confidence=result.confidence,
+            processing_time_ms=result.processing_time_ms,
+            metadata=result.metadata,
         )
     
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Erreur de resolution: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur de résolution: {str(e)}")
 
 
-# -----------------------------------------------------------------------------
-# Endpoints de comparaison
-# -----------------------------------------------------------------------------
+@app.post("/solve/cascade", response_model=SolveResponse, tags=["Solve"])
+async def solve_cascade(request: SolveRequest):
+    """
+    Résout un CAPTCHA en utilisant la cascade de modèles.
+    
+    La cascade essaie les modèles dans l'ordre jusqu'à obtenir
+    un résultat confiant:
+    1. CRNN (si charset compatible)
+    2. TrOCR
+    3. Florence-2
+    """
+    try:
+        image_bytes = base64.b64decode(request.image_base64)
+        result = solver.solve_cascade(image_bytes)
+        
+        return SolveResponse(
+            predicted_text=result.text,
+            model_used=result.model,
+            confidence=result.confidence,
+            processing_time_ms=result.processing_time_ms,
+            metadata=result.metadata,
+        )
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erreur de cascade: {str(e)}")
+
+
+# =============================================================================
+# ENDPOINTS - COMPARAISON
+# =============================================================================
 
 @app.post("/compare", response_model=CompareResponse, tags=["Compare"])
 async def compare_models(request: CompareRequest):
     """
-    Compare tous les modeles sur le meme CAPTCHA.
+    Compare tous les modèles sur le même CAPTCHA.
     
-    Retourne les predictions de chaque modele avec les temps de traitement.
-    Si true_text est fourni, calcule aussi la precision.
+    - **image_base64**: Image en base64
+    - **true_text**: Texte réel pour calculer l'accuracy (optionnel)
+    - **models**: Liste des modèles à comparer (optionnel)
     """
     try:
-        # Decoder l'image
-        try:
-            image_bytes = base64.b64decode(request.image_base64)
-        except Exception:
-            raise HTTPException(status_code=400, detail="Image base64 invalide.")
+        image_bytes = base64.b64decode(request.image_base64)
+        compare_result = solver.compare(
+            image_bytes,
+            true_text=request.true_text,
+            models=request.models,
+        )
         
+        # Convertir les résultats
         results = {}
-        
-        # Tester chaque modele
-        for model_name in solver.get_available_models():
-            try:
-                start_time = time.time()
-                result = solver.solve(image_bytes, model=model_name)
-                elapsed = (time.time() - start_time) * 1000
-                
-                model_result = {
-                    "prediction": result["text"],
-                    "time_ms": round(elapsed, 2),
-                    "confidence": result.get("confidence"),
-                }
-                
-                if request.true_text:
-                    model_result["correct"] = (
-                        result["text"].lower() == request.true_text.lower()
-                    )
-                
-                results[model_name] = model_result
-                
-            except Exception as e:
-                results[model_name] = {"error": str(e)}
-        
-        # Determiner le gagnant
-        valid_results = [
-            (k, v) for k, v in results.items() 
-            if "error" not in v
-        ]
-        
-        if valid_results:
-            # Si true_text fourni, le gagnant est le plus rapide parmi les corrects
-            if request.true_text:
-                correct_results = [
-                    (k, v) for k, v in valid_results 
-                    if v.get("correct", False)
-                ]
-                if correct_results:
-                    winner = min(correct_results, key=lambda x: x[1]["time_ms"])[0]
-                else:
-                    winner = min(valid_results, key=lambda x: x[1]["time_ms"])[0]
-            else:
-                winner = min(valid_results, key=lambda x: x[1]["time_ms"])[0]
-        else:
-            winner = "none"
+        for name, result in compare_result.results.items():
+            results[name] = {
+                "prediction": result.text,
+                "confidence": result.confidence,
+                "time_ms": result.processing_time_ms,
+                "correct": result.metadata.get("correct") if result.metadata else None,
+            }
         
         return CompareResponse(
             results=results,
-            winner=winner,
-            true_text=request.true_text,
+            winner=compare_result.winner,
+            true_text=compare_result.true_text,
         )
     
-    except HTTPException:
-        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur de comparaison: {str(e)}")
 
 
-@app.get("/compare/benchmark", tags=["Compare"])
-async def run_benchmark(n_samples: int = 10):
+@app.get("/benchmark", tags=["Compare"])
+async def run_benchmark(
+    n_samples: int = Query(default=10, ge=1, le=100, description="Nombre de CAPTCHAs"),
+    noise_level: float = Query(default=0.3, ge=0, le=1, description="Niveau de bruit"),
+    models: Optional[str] = Query(None, description="Modèles séparés par des virgules"),
+):
     """
-    Execute un benchmark en generant et resolvant N CAPTCHAs.
+    Exécute un benchmark sur des CAPTCHAs générés.
     
-    Retourne les statistiques de precision et de vitesse pour chaque modele.
+    - **n_samples**: Nombre de CAPTCHAs à tester (1-100)
+    - **noise_level**: Niveau de bruit (0-1)
+    - **models**: Liste des modèles (ex: "trocr,crnn")
     """
     try:
-        results = {
-            model: {"correct": 0, "total_time": 0, "predictions": []}
-            for model in solver.get_available_models()
-        }
-        
-        for i in range(n_samples):
-            # Generer un CAPTCHA
-            image, true_text = generator.generate()
-            buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
-            image_bytes = buffer.getvalue()
-            
-            # Tester chaque modele
-            for model_name in results.keys():
-                try:
-                    start = time.time()
-                    result = solver.solve(image_bytes, model=model_name)
-                    elapsed = time.time() - start
-                    
-                    predicted = result["text"]
-                    is_correct = predicted.lower() == true_text.lower()
-                    
-                    results[model_name]["total_time"] += elapsed
-                    if is_correct:
-                        results[model_name]["correct"] += 1
-                    
-                    results[model_name]["predictions"].append({
-                        "true": true_text,
-                        "predicted": predicted,
-                        "correct": is_correct,
-                    })
-                except Exception:
-                    pass
-        
-        # Calculer les statistiques
-        summary = {}
-        for model_name, data in results.items():
-            n = len(data["predictions"])
-            if n > 0:
-                summary[model_name] = {
-                    "accuracy": f"{data['correct'] / n * 100:.1f}%",
-                    "avg_time_ms": round(data["total_time"] / n * 1000, 2),
-                    "correct": data["correct"],
-                    "total": n,
-                }
+        models_list = models.split(",") if models else None
+        results = solver.benchmark(
+            n_samples=n_samples,
+            noise_level=noise_level,
+            models=models_list,
+        )
         
         return {
             "n_samples": n_samples,
-            "summary": summary,
-            "details": {k: v["predictions"] for k, v in results.items()},
+            "noise_level": noise_level,
+            "summary": {
+                name: result.to_dict() for name, result in results.items()
+            },
         }
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur de benchmark: {str(e)}")
 
 
-# -----------------------------------------------------------------------------
-# Endpoints de webscraping
-# -----------------------------------------------------------------------------
+# =============================================================================
+# ENDPOINTS - WEBSCRAPING
+# =============================================================================
 
 @app.post("/scrape", response_model=ScrapeResponse, tags=["Scrape"])
 async def scrape_with_captcha(request: ScrapeRequest):
     """
-    Scrape une page web en resolvant automatiquement les CAPTCHAs.
+    Scrape une page web en résolvant automatiquement les CAPTCHAs.
     
-    - **url**: URL de la page a scraper
-    - **captcha_selector**: Selecteur CSS de l'image CAPTCHA (optionnel)
-    - **input_selector**: Selecteur CSS du champ de saisie (optionnel)
-    - **submit_selector**: Selecteur CSS du bouton submit (optionnel)
-    - **data_selector**: Selecteur CSS des donnees a extraire (optionnel)
-    - **model**: Modele de resolution ('easyocr' ou 'crnn')
-    
-    Note: Necessite Playwright installe (pip install playwright && playwright install chromium)
+    **Note**: Nécessite Playwright (`pip install playwright && playwright install chromium`)
     """
     try:
         from app.services.scraper_service import ScraperService
@@ -562,12 +535,12 @@ async def scrape_with_captcha(request: ScrapeRequest):
         )
         await scraper.close()
         
-        return ScrapeResponse(**result)
+        return ScrapeResponse(**result.to_dict())
     
     except ImportError:
         raise HTTPException(
             status_code=500,
-            detail="Playwright non installe. Executez: uv add playwright && playwright install chromium"
+            detail="Playwright non installé. Exécutez: pip install playwright && playwright install chromium"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erreur de scraping: {str(e)}")
@@ -575,13 +548,15 @@ async def scrape_with_captcha(request: ScrapeRequest):
 
 @app.get("/scrape/demo", tags=["Scrape"])
 async def scrape_demo():
-    """
-    Informations sur le module de webscraping.
-    """
+    """Informations sur le module de webscraping."""
     return {
         "message": "Module de Webscraping avec bypass CAPTCHA",
-        "description": "Utilisez POST /scrape pour scraper une page avec resolution automatique de CAPTCHA",
-        "selecteurs_captcha_detectes": [
+        "description": "Utilisez POST /scrape pour scraper une page avec résolution automatique",
+        "test_sites": [
+            "https://2captcha.com/demo/normal",
+            "https://captcha.com/demos/features/captcha-demo.aspx",
+        ],
+        "selecteurs_detectes": [
             "img[src*='captcha']",
             "img[id*='captcha']",
             "#captcha",
@@ -592,13 +567,14 @@ async def scrape_demo():
             "captcha_selector": "#captcha-image",
             "input_selector": "#captcha-input",
             "submit_selector": "#submit-btn",
+            "model": "trocr",
         },
-        "note": "Pour des raisons ethiques, utilisez ce module uniquement sur vos propres sites ou avec autorisation.",
+        "note": "Pour des raisons éthiques, utilisez ce module uniquement sur vos propres sites ou avec autorisation.",
     }
 
 
 # =============================================================================
-# Point d'entree
+# POINT D'ENTRÉE
 # =============================================================================
 
 if __name__ == "__main__":
