@@ -1,334 +1,177 @@
-# 🔓 CAPTCHA Factory
+# CAPTCHA Factory
 
-<div align="center">
+Projet de resolution automatique de CAPTCHAs avec EasyOCR et Playwright.
 
-![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
-
-**API de résolution automatique de CAPTCHAs visuels**
-
-[Documentation](#-documentation) • [Installation](#-installation) • [Usage](#-usage) • [API](#-api) • [Modèles](#-modèles)
-
-</div>
-
----
-
-## 📚 Projet Académique
-
-| | |
-|---|---|
-| **Formation** | M2 MoSEF (Modélisation Statistique, Économique et Financière) |
-| **Université** | Paris 1 Panthéon-Sorbonne |
-| **Équipe** | Hana (CRNN) & Aymen (API/Intégration) |
-| **Année** | 2024-2025 |
-
----
-
-## ✨ Fonctionnalités
-
-- 🎨 **Génération** de CAPTCHAs personnalisables
-- 🔍 **Résolution** avec plusieurs modèles (CRNN, TrOCR, Florence-2)
-- 🔄 **Mode Cascade** avec fallback automatique
-- ⚖️ **Comparaison** des performances entre modèles
-- 📊 **Benchmark** automatisé
-- 🌐 **Webscraping** avec bypass CAPTCHA
-- 🎯 **Dashboard** interactif Streamlit
-
----
-
-## 🤖 Modèles Disponibles
-
-| Modèle | Description | Accuracy | Charset | Vitesse |
-|--------|-------------|----------|---------|---------|
-| **CRNN** | CNN + GRU bidirectionnel (Hana) | 98% | 19 chars | ⚡ ~50ms |
-| **TrOCR** | Transformer pré-entraîné | 99.25% | Complet | 🔄 ~200ms |
-| **Florence-2** | VLM Microsoft (zero-shot) | ~85% | Universel | 🐢 ~500ms |
-| **EasyOCR** | OCR généraliste | ~60% | Complet | 🔄 ~150ms |
-
-### Mode Cascade
-
-Le mode `cascade` essaie les modèles dans l'ordre jusqu'à obtenir une prédiction confiante :
+## Architecture
 
 ```
-CAPTCHA → CRNN (si charset compatible)
-            ↓ (confiance < 85%)
-         TrOCR (très précis)
-            ↓ (confiance < 85%)
-         Florence-2 (fallback universel)
++-------------------+         +-------------------+
+|     SCRAPER       |  HTTP   |       API         |
+|   (Playwright)    | ------> |    (FastAPI)      |
+|                   |         |    + EasyOCR      |
+|  headless=False   | <------ |                   |
+|    (visible)      |  JSON   |                   |
++-------------------+         +-------------------+
 ```
 
----
+## Structure du Projet
 
-## 🚀 Installation
+```
+captcha_factory/
+|
++-- api/
+|   +-- __init__.py
+|   +-- main.py          # Endpoint FastAPI POST /solve
+|   +-- solver.py        # Classe EasyOCR
+|
++-- scraper/
+|   +-- __init__.py
+|   +-- browser.py       # Classe Playwright (visible)
+|
++-- run_api.py           # Lance l'API
++-- run_demo.py          # Lance la demo visuelle
++-- requirements.txt
++-- README.md
+```
 
-### Prérequis
+## Installation
 
-- Python 3.12+
-- pip ou uv
-
-### Installation rapide
+### 1. Creer un environnement virtuel (recommande)
 
 ```bash
-# Cloner le projet
-git clone https://github.com/username/captcha-factory.git
-cd captcha-factory
-
-# Créer l'environnement virtuel
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# ou: venv\Scripts\activate  # Windows
 
-# Installer les dépendances
+# Windows
+venv\Scripts\activate
+
+# Linux/Mac
+source venv/bin/activate
+```
+
+### 2. Installer les dependances
+
+```bash
 pip install -r requirements.txt
+```
 
-# Télécharger les modèles pré-entraînés
-python scripts/download_models.py
+### 3. Installer Playwright
 
-# (Optionnel) Installer Playwright pour le webscraping
-pip install playwright
+```bash
 playwright install chromium
 ```
 
-### Avec uv (recommandé)
+## Utilisation
+
+### Etape 1: Lancer l'API (Terminal 1)
 
 ```bash
-# Installer uv
-pip install uv
-
-# Synchroniser les dépendances
-uv sync
-
-# Télécharger les modèles
-uv run python scripts/download_models.py
+python run_api.py
 ```
 
----
+L'API sera disponible sur:
+- URL: http://localhost:8000
+- Documentation: http://localhost:8000/docs
 
-## 💻 Usage
-
-### Lancer l'API
+### Etape 2: Lancer la demo (Terminal 2)
 
 ```bash
-# Via le script principal
-python main.py api
-
-# Ou directement avec uvicorn
-uvicorn app.main:app --reload
-
-# L'API est disponible sur http://localhost:8000
-# Documentation Swagger: http://localhost:8000/docs
+python run_demo.py
 ```
 
-### Lancer le Dashboard
+Le navigateur s'ouvrira et vous pourrez observer:
+1. La navigation vers 2captcha.com/demo/normal
+2. La detection du CAPTCHA
+3. La capture de l'image
+4. L'envoi a l'API
+5. La saisie automatique de la solution
+6. La verification du resultat
 
-```bash
-python main.py dashboard
+## API Endpoints
 
-# Le dashboard est disponible sur http://localhost:8501
+### POST /solve
+
+Resout un CAPTCHA a partir d'une image Base64.
+
+**Requete:**
+```json
+{
+    "image_base64": "iVBORw0KGgo..."
+}
 ```
 
-### Autres commandes
-
-```bash
-# Télécharger les modèles
-python main.py download
-
-# Lancer le benchmark
-python main.py benchmark --n 50
-
-# Lancer les tests
-python main.py test
-
-# Générer un dataset
-python main.py generate --n 1000 --output ./data/synthetic
-
-# Afficher l'aide
-python main.py --help
+**Reponse:**
+```json
+{
+    "success": true,
+    "text": "W9H5K",
+    "confidence": 0.85
+}
 ```
 
----
+### GET /health
 
-## 🔌 API
+Verifie que l'API fonctionne.
 
-### Endpoints principaux
+**Reponse:**
+```json
+{
+    "status": "ok",
+    "message": "API is running"
+}
+```
 
-| Méthode | Endpoint | Description |
-|---------|----------|-------------|
-| GET | `/` | Informations de l'API |
-| GET | `/health` | Status de santé |
-| GET | `/models` | Liste des modèles |
-| POST | `/generate` | Générer un CAPTCHA |
-| GET | `/generate/random` | CAPTCHA aléatoire |
-| POST | `/solve` | Résoudre (base64) |
-| POST | `/solve/upload` | Résoudre (fichier) |
-| POST | `/solve/cascade` | Résolution en cascade |
-| POST | `/compare` | Comparer les modèles |
-| GET | `/benchmark` | Benchmark complet |
-| POST | `/scrape` | Webscraping avec bypass |
+## Configuration
 
-### Exemples d'utilisation
+### Modifier le site cible
 
-#### Python
+Dans `scraper/browser.py`, modifiez les constantes:
 
 ```python
-import requests
-import base64
-
-# Générer un CAPTCHA
-response = requests.post("http://localhost:8000/generate", json={
-    "length": 5,
-    "noise_level": 0.3,
-})
-data = response.json()
-image_base64 = data["image_base64"]
-true_text = data["true_text"]
-
-# Résoudre le CAPTCHA
-response = requests.post("http://localhost:8000/solve", json={
-    "image_base64": image_base64,
-    "model": "trocr",
-})
-result = response.json()
-print(f"Prédit: {result['predicted_text']}")
-print(f"Confiance: {result['confidence']}")
+SITE_URL = "https://2captcha.com/demo/normal"
+CAPTCHA_SELECTOR = "..."
+INPUT_SELECTOR = "..."
+SUBMIT_SELECTOR = "..."
+SUCCESS_TEXT = "..."
 ```
 
-#### cURL
+### Mode headless
 
+Pour executer sans afficher le navigateur:
+
+```python
+scraper = CaptchaScraper(
+    headless=True,  # Invisible
+    slow_mo=0,      # Pas de delai
+)
+```
+
+## Dependances
+
+- fastapi: Framework API
+- uvicorn: Serveur ASGI
+- playwright: Automatisation navigateur
+- easyocr: OCR pour lire les CAPTCHAs
+- Pillow: Manipulation d'images
+- requests: Appels HTTP
+- numpy: Calcul numerique (requis par EasyOCR)
+
+## Troubleshooting
+
+### "L'API n'est pas accessible"
+
+Assurez-vous que l'API est lancee dans un autre terminal:
 ```bash
-# Générer un CAPTCHA
-curl -X POST "http://localhost:8000/generate" \
-     -H "Content-Type: application/json" \
-     -d '{"length": 5, "noise_level": 0.3}'
-
-# Résoudre avec un fichier
-curl -X POST "http://localhost:8000/solve/upload" \
-     -F "file=@captcha.png" \
-     -F "model=trocr"
+python run_api.py
 ```
 
----
+### "CAPTCHA non trouve"
 
-## 📁 Structure du Projet
+Les selecteurs CSS peuvent avoir change. Inspectez la page et mettez a jour les selecteurs dans `browser.py`.
 
-```
-CAPTCHA_Factory/
-├── app/                          # Code source principal
-│   ├── main.py                   # API FastAPI
-│   ├── dashboard.py              # Dashboard Streamlit
-│   ├── models/                   # Définitions des modèles
-│   │   ├── base_solver.py        # Classe abstraite
-│   │   ├── crnn_model.py         # Solver CRNN
-│   │   ├── trocr_solver.py       # Solver TrOCR
-│   │   └── florence_solver.py    # Solver Florence-2
-│   ├── services/                 # Services métier
-│   │   ├── captcha_generator.py  # Générateur
-│   │   ├── solver_service.py     # Service multi-modèle
-│   │   └── scraper_service.py    # Webscraping
-│   └── utils/                    # Utilitaires
-├── config/                       # Configuration
-├── data/                         # Données et datasets
-├── models/                       # Poids des modèles
-├── notebooks/                    # Notebooks Jupyter
-├── scripts/                      # Scripts utilitaires
-├── tests/                        # Tests unitaires
-├── main.py                       # Point d'entrée
-├── requirements.txt              # Dépendances
-└── README.md                     # Ce fichier
-```
+### "EasyOCR est lent au premier lancement"
 
----
+C'est normal. EasyOCR telecharge les modeles au premier lancement (~100 MB).
 
-## 📓 Notebooks
+## Licence
 
-| Notebook | Description |
-|----------|-------------|
-| `01_captcha_generator.ipynb` | Démonstration du générateur |
-| `02_captcha_solver.ipynb` | Test des modèles de résolution |
-| `03_webscraping.ipynb` | Webscraping avec bypass |
-| `04_model_comparison.ipynb` | Comparaison des modèles |
-| `05_benchmark_complete.ipynb` | Benchmark approfondi |
-
----
-
-## ⚙️ Configuration
-
-Copiez `.env.example` vers `.env` et modifiez selon vos besoins :
-
-```bash
-cp .env.example .env
-```
-
-Variables principales :
-
-```env
-DEVICE=cpu                    # cpu ou cuda
-DEFAULT_MODEL=trocr           # Modèle par défaut
-CONFIDENCE_THRESHOLD=0.85     # Seuil pour cascade
-LOG_LEVEL=INFO                # Niveau de log
-```
-
----
-
-## 🧪 Tests
-
-```bash
-# Tous les tests
-pytest tests/ -v
-
-# Tests spécifiques
-pytest tests/test_generator.py -v
-pytest tests/test_solvers.py -v
-pytest tests/test_api.py -v
-
-# Avec couverture
-pytest tests/ --cov=app --cov-report=html
-```
-
----
-
-## 📊 Benchmark
-
-```bash
-# Benchmark rapide (20 échantillons)
-python scripts/benchmark.py
-
-# Benchmark complet (100 échantillons)
-python scripts/benchmark.py --n-samples 100 --models trocr,crnn
-
-# Sauvegarder les résultats
-python scripts/benchmark.py --output results.json
-```
-
----
-
-## ⚠️ Avertissement
-
-Ce projet est à but **éducatif uniquement**. N'utilisez pas ces outils pour contourner des CAPTCHAs sur des sites sans autorisation. Le contournement de CAPTCHAs peut violer les conditions d'utilisation des sites web et potentiellement des lois locales.
-
----
-
-## 📄 Licence
-
-MIT License - voir [LICENSE](LICENSE)
-
----
-
-## 🙏 Remerciements
-
-- [HuggingFace](https://huggingface.co/) pour les modèles pré-entraînés
-- [DunnBC22](https://huggingface.co/DunnBC22) pour le modèle TrOCR fine-tuné
-- [Microsoft](https://huggingface.co/microsoft) pour Florence-2
-- [FastAPI](https://fastapi.tiangolo.com/) et [Streamlit](https://streamlit.io/)
-
----
-
-<div align="center">
-
-**M2 MoSEF - Université Paris 1 Panthéon-Sorbonne**
-
-Hana & Aymen • 2024-2025
-
-</div>
+MIT
